@@ -4,7 +4,6 @@ class ChamberManager {
 		this.ws = null;
 		this.myID = null;
 		this.ready = false;
-		this.queue = [];
 		this.knownParticipants = new Set();
 		this.messageCallback = () => {};
 		this.participantCallback = () => {};
@@ -18,10 +17,6 @@ class ChamberManager {
 	_open() {
 		this.ready = true;
 		this.messageCallback('info', 'CONNECTED');
-		for (const msg of this.queue) {
-			this.send(msg);
-		}
-		this.queue = [];
 	}
 
 	_hi(id) {
@@ -88,12 +83,11 @@ class ChamberManager {
 	}
 
 	send(msg) {
-		if (this.ready) {
-			this.ws.send(msg);
-			this.messageCallback(null, msg);
-		} else {
-			this.queue.push(msg);
+		if (!this.ready) {
+			return false;
 		}
+		this.ws.send(msg);
+		return true;
 	}
 
 	reconnect() {
@@ -137,7 +131,7 @@ window.addEventListener('load', () => {
 	const messages = document.getElementById('messages');
 	const participants = document.getElementById('participants');
 
-	cm.setMessageCallback((sender, message) => {
+	function showMessage(sender, message) {
 		const o = document.createElement('div');
 		if (sender === null) {
 			o.className = 'message me';
@@ -162,7 +156,9 @@ window.addEventListener('load', () => {
 		if (atBottom) {
 			messages.scrollTop = messages.scrollHeight - messages.clientHeight;
 		}
-	});
+	}
+
+	cm.setMessageCallback(showMessage);
 
 	cm.setParticipantCallback((myID, ps) => {
 		participants.innerText = '';
@@ -195,7 +191,10 @@ window.addEventListener('load', () => {
 	}
 
 	function sendMessage() {
-		cm.send(fMessage.value);
-		fMessage.value = '';
+		const msg = fMessage.value;
+		if (cm.send(msg)) {
+			fMessage.value = '';
+			showMessage(null, msg);
+		}
 	}
 });
