@@ -5,9 +5,13 @@ const EventEmitter = require('events');
 const {HttpError} = require('./HttpError.js');
 const {OnDemmandBuffer} = require('./AppendableBuffer.js');
 
-const MAX_QUEUE_ITEMS = 1024;
-const MAX_QUEUE_DATA = 128 * 1024;
-const HEADERS_MAX_LENGTH = 256;
+const DEFAULT_LIMITS = {
+	MAX_QUEUE_ITEMS: 1024,
+	MAX_QUEUE_DATA: 128 * 1024,
+	HEADERS_MAX_LENGTH: 256,
+	CHAMBER_MAX_CONNECTIONS: 64,
+	MAX_CHAMBERS: 512,
+};
 
 function queueDataBytes(queue) {
 	let size = 0;
@@ -15,6 +19,13 @@ function queueDataBytes(queue) {
 		size += item.data.length;
 	}
 	return size;
+}
+
+function queueBeyondCapacity(queue, limits) {
+	return (
+		queue.length > limits.MAX_QUEUE_ITEMS ||
+		queueDataBytes(queue) > limits.MAX_QUEUE_DATA
+	);
 }
 
 function shuffle(list) {
@@ -51,10 +62,11 @@ function targetComparator(a, b) {
 }
 
 class OutputQueue {
-	constructor(connection) {
+	constructor(connection, limits) {
+		this.connection = connection;
+		this.limits = limits;
 		this.queue = [];
 		this.activeSender = null;
-		this.connection = connection;
 	}
 
 	_handle(sender, {data, opcode, continuation, fin}) {
@@ -114,7 +126,7 @@ class OutputQueue {
 			}
 		} else {
 			this.queue.push({sender, info});
-			while (this.queue.length > MAX_QUEUE_ITEMS || queueDataBytes(this.queue) > MAX_QUEUE_DATA) {
+			while (queueBeyondCapacity(this.queue, this.limits)) {
 				this.abortCurrent();
 			}
 		}
@@ -169,21 +181,25 @@ function socketName(socket) {
 }
 
 class Chamber extends EventEmitter {
-	constructor(name, log) {
+	constructor(name, limits, log) {
 		super();
 		this.name = name;
+		this.limits = limits;
 		this.log = ((m) => log('[chamber ' + name + ']: ' + m));
 		this.connections = new Map();
 		this.idCounter = 0;
 	}
 
 	add(newConnection) {
+		if (this.connections.size >= this.limits.CHAMBER_MAX_CONNECTIONS) {
+			throw new HttpError(1013, 'Chamber is full');
+		}
 		const details = {
 			connection: newConnection,
-			queue: new OutputQueue(newConnection),
+			queue: new OutputQueue(newConnection, this.limits),
 			joined: Date.now(),
 			id: String(this.idCounter ++),
-			headerBuffer: new OnDemmandBuffer(HEADERS_MAX_LENGTH),
+			headerBuffer: new OnDemmandBuffer(this.limits.HEADERS_MAX_LENGTH),
 			headerLength: 0,
 			currentTargets: new Set(),
 		};
@@ -335,9 +351,10 @@ class Chamber extends EventEmitter {
 }
 
 class EchoChamber {
-	constructor(baseURL, permittedOrigins = []) {
+	constructor(baseURL, permittedOrigins = [], limits = DEFAULT_LIMITS) {
 		this.baseURL = baseURL;
 		this.permittedOrigins = permittedOrigins;
+		this.limits = limits;
 		this.chambers = new Map();
 		this.log = null;
 	}
@@ -369,7 +386,10 @@ class EchoChamber {
 	accept(url, connection) {
 		let chamber = this.chambers.get(url);
 		if (!chamber) {
-			chamber = new Chamber(url, this.log);
+			if (this.chambers.size >= this.limits.MAX_CHAMBERS) {
+				throw new HttpError(1013, 'Too many chambers');
+			}
+			chamber = new Chamber(url, this.limits, this.log);
 			this.chambers.set(url, chamber);
 			this.log('Created chamber ' + url);
 			chamber.once('close', () => {

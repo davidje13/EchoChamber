@@ -10,6 +10,10 @@ const STATE_STARTING = 1;
 const STATE_RUNNING = 2;
 const STATE_STOPPING = 3;
 
+function socketName(socket) {
+	return socket.remoteAddress + ':' + socket.remotePort;
+}
+
 class WebSocketServer extends EventEmitter {
 	constructor() {
 		super();
@@ -46,7 +50,11 @@ class WebSocketServer extends EventEmitter {
 	_handleConnection(socket) {
 		const connection = new WebSocketConnection(socket, this._findTarget);
 		this.connections.add(connection);
-		connection.on('error', ({status, message, error}) => this.log('Closed socket with ' + status + ' "' + message + '"' + (error ? ' due to: ' + error : '')));
+		connection.on('error', ({status, message, error}) => this.log(
+			'Closed socket ' + socketName(socket) +
+			' with ' + status + ' "' + message + '"' +
+			(error ? ' due to: ' + error : '')
+		));
 		connection.once('close', () => this.connections.delete(connection));
 	}
 

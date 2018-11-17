@@ -18,7 +18,19 @@ if (DOMAINS === '') {
 	DOMAINS = DOMAINS.split(',');
 }
 
-const echoChamber = new EchoChamber('/', DOMAINS);
+// Max memory usage is approximately (bytes):
+// (MAX_QUEUE_DATA + HEADERS_MAX_LENGTH) * CHAMBER_MAX_CONNECTIONS * MAX_CHAMBERS
+// + some overhead from data structures
+// Memory usage will typically be much lower (unless explicitly attacked)
+// The values below result in ~0.5GB peak memory usage
+
+const echoChamber = new EchoChamber('/', DOMAINS, {
+	MAX_QUEUE_ITEMS: 1024,
+	MAX_QUEUE_DATA: 16 * 1024,
+	HEADERS_MAX_LENGTH: 1024,
+	CHAMBER_MAX_CONNECTIONS: 64,
+	MAX_CHAMBERS: 512,
+});
 
 new WebSocketServer()
 	.addHandler(echoChamber)

@@ -1,6 +1,6 @@
 'use strict';
 
-const FRAME_HEADER_MAX_SIZE = 14;
+const FRAME_HEADER_MAX_SIZE = 14; // defined by spec
 const SHARED_HEADERBUF = Buffer.alloc(FRAME_HEADER_MAX_SIZE);
 
 // fin? (1 bit)

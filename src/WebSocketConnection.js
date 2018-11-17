@@ -8,10 +8,10 @@ const {HttpError} = require('./HttpError.js');
 const {OnDemmandBuffer} = require('./AppendableBuffer.js');
 const ws = require('./wsFrameUtils.js');
 
-const COMMAND_MAX_SIZE = 125;
-const HTTP_HEADER_MAX_LINE_LENGTH = 256;
+const COMMAND_MAX_SIZE = 125; // defined by spec
+const HTTP_HEADER_MAX_LINE_LENGTH = 1024;
 const HTTP_HEADER_MAX_COUNT = 32;
-const HTTP_HEADER_MAX_VALUE_LENGTH = 256;
+const HTTP_HEADER_MAX_VALUE_LENGTH = 1024;
 
 const SHARED_COMMANDBUF = Buffer.alloc(COMMAND_MAX_SIZE);
 
@@ -34,11 +34,7 @@ function readNextLine(buffer, d) {
 		};
 	}
 
-	if (buffer.size() >= HTTP_HEADER_MAX_LINE_LENGTH) {
-		return {consumed, line: null, error: true};
-	}
-
-	return {consumed, line: null, error: false};
+	return {consumed, line: null, error: buffer.size() >= buffer.capacity()};
 }
 
 function wsComputeKeyDigest(key) {
