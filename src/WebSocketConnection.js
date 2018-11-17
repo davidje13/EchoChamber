@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const http = require('http');
 const EventEmitter = require('events');
 
+const {HttpError} = require('./HttpError.js');
 const {AppendableBuffer} = require('./AppendableBuffer.js');
 const ws = require('./wsFrameUtils.js');
 
@@ -18,6 +19,34 @@ const REGEXP_HTTP_REQUEST = /^GET ([a-zA-Z0-9_\\\/.?+ \-=~]*) HTTP\/1\.1$/;
 
 const nop = () => {};
 
+function readNextLine(buffer, d) {
+	const existingBufferData = buffer.size();
+	const consumed = buffer.add(d);
+	const b = buffer.get();
+	const end = b.indexOf('\r\n', 0, 'utf8');
+	if (end !== -1) {
+		const line = b.toString('utf8', 0, end);
+		buffer.clear();
+		return {
+			consumed: end + 2 - existingBufferData,
+			line,
+			error: false,
+		};
+	}
+
+	if (buffer.size() >= HTTP_HEADER_MAX_LINE_LENGTH) {
+		return {consumed, line: null, error: true};
+	}
+
+	return {consumed, line: null, error: false};
+}
+
+function wsComputeKeyDigest(key) {
+	const sha1 = crypto.createHash('sha1');
+	sha1.update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11', 'utf8');
+	return sha1.digest('base64');
+}
+
 class WebSocketConnection extends EventEmitter {
 	constructor(socket, targetResolver) {
 		super();
@@ -26,16 +55,13 @@ class WebSocketConnection extends EventEmitter {
 		this.targetResolver = targetResolver;
 		this.url = null;
 		this.headers = new Map();
+		this.hasUpgraded = false;
 
 		this.frame = null;
 		this.lastNonContOpcode = 0;
 		this.frameMaskPos = 0;
 
-		this.buffer = new AppendableBuffer(Math.max(
-			ws.FRAME_HEADER_MAX_SIZE,
-			COMMAND_MAX_SIZE,
-			HTTP_HEADER_MAX_LINE_LENGTH
-		));
+		this.buffer = new AppendableBuffer(HTTP_HEADER_MAX_LINE_LENGTH);
 
 		this._handshakeData = this._handshakeData.bind(this);
 		this._data = this._data.bind(this);
@@ -53,91 +79,44 @@ class WebSocketConnection extends EventEmitter {
 		const hWsVersion = Number(this.headers.get('Sec-WebSocket-Version') || '0');
 
 		if (hConnection !== 'Upgrade' || hUpgrade !== 'websocket') {
-			return this._returnHttpError(400, 'Must Upgrade connection to websocket');
+			throw new HttpError(400, 'Must Upgrade connection to websocket');
 		}
 		if (!hWsKey) {
-			return this._returnHttpError(400, 'Missing Sec-WebSocket-Key header');
+			throw new HttpError(400, 'Missing Sec-WebSocket-Key header');
 		}
 		if (hWsVersion < 13) {
-			return this._returnHttpError(400, 'Unsupported Sec-WebSocket-Version');
+			throw new HttpError(400, 'Unsupported Sec-WebSocket-Version');
 		}
 
 		const requestedProtocols = (hWsProtocols === '') ? [] : hWsProtocols.split(', ');
 
-		let choice = null;
-		try {
-			choice = this.targetResolver(this.url, this.headers, requestedProtocols);
-			if (choice.protocol === null) {
-				return this._returnHttpError(404, 'No handlers found for request');
-			}
-		} catch (e) {
-			let status = 500;
-			let message = 'An internal error occurred';
-			if (typeof e === 'object' && e.status) {
-				status = e.status;
-				message = e.message;
-			}
-			return this._returnHttpError(status, message, e);
+		const choice = this.targetResolver(this.url, this.headers, requestedProtocols);
+		if (choice.protocol === null) {
+			throw new HttpError(404, 'No handlers found for request');
 		}
 
+		// replace buffer with smaller version
+		this.buffer = new AppendableBuffer(Math.max(
+			ws.FRAME_HEADER_MAX_SIZE,
+			COMMAND_MAX_SIZE
+		));
 		this.socket.off('data', this._handshakeData);
 		this.socket.on('data', this._data);
-
-		const sha1 = crypto.createHash('sha1');
-		sha1.update(hWsKey + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11', 'utf8');
-		const shaKey = sha1.digest('base64');
 
 		this.socket.write(
 				'HTTP/1.1 101 Switching Protocols\r\n' +
 				'Upgrade: websocket\r\n' +
 				'Connection: Upgrade\r\n' +
-				'Sec-WebSocket-Accept: ' + shaKey + '\r\n' +
+				'Sec-WebSocket-Accept: ' + wsComputeKeyDigest(hWsKey) + '\r\n' +
 				'Sec-WebSocket-Protocol: ' + choice.protocol + '\r\n' +
 				'\r\n', 'utf8'
 		);
+		this.hasUpgraded = true;
 
-		try {
-			choice.acceptor(this);
-			this.emit('upgrade', {protocol: choice.protocol});
-			this.url = null;
-			this.headers = null;
-		} catch (e) {
-			this.error(1011, 'Unknown error', e);
-		}
-	}
-
-	_readNextLine(d) {
-		const existingBufferData = this.buffer.size();
-		const consumed = this.buffer.add(d);
-		const b = this.buffer.get();
-		const end = b.indexOf('\r\n', 0, 'utf8');
-		if (end !== -1) {
-			const line = b.toString('utf8', 0, end);
-			this.buffer.clear();
-			return {
-				consumed: end + 2 - existingBufferData,
-				line,
-				error: false,
-			};
-		}
-
-		if (this.buffer.size() >= HTTP_HEADER_MAX_LINE_LENGTH) {
-			return {consumed, line: null, error: true};
-		}
-
-		return {consumed, line: null, error: false};
-	}
-
-	_returnHttpError(code, message, error = null) {
-		this.emit('error', {code, message, error});
-		this.socket.write(
-				'HTTP/1.1 ' + code + ' ' + http.STATUS_CODES[code] + '\r\n' +
-				'Content-Type: text/plain; charset=utf-8\r\n' +
-				'Content-Length: ' + Buffer.byteLength(message + '\n', 'utf8') + '\r\n' +
-				'\r\n' +
-				message + '\n', 'utf8'
-		);
-		this.socket.destroy();
+		choice.acceptor(this);
+		this.emit('upgrade', {protocol: choice.protocol});
+		this.url = null;
+		this.headers = null;
 	}
 
 	_handshakeData(d) {
@@ -147,10 +126,10 @@ class WebSocketConnection extends EventEmitter {
 		try {
 			let offset = 0;
 			while (offset < d.length) {
-				const {consumed, line, error} = this._readNextLine(d.slice(offset));
+				const {consumed, line, error} = readNextLine(this.buffer, d.slice(offset));
 				offset += consumed;
 				if (error) {
-					return this._returnHttpError(400, 'Header too long');
+					throw new HttpError(400, 'Header too long');
 				}
 				if (line === null) {
 					break; // Wait for more data
@@ -158,7 +137,7 @@ class WebSocketConnection extends EventEmitter {
 				if (this.url === null) {
 					const match = line.match(REGEXP_HTTP_REQUEST)
 					if (!match) {
-						return this._returnHttpError(400, 'Invalid URL');
+						throw new HttpError(400, 'Invalid URL');
 					}
 					this.url = match[1];
 					continue;
@@ -169,22 +148,22 @@ class WebSocketConnection extends EventEmitter {
 
 				const p = line.indexOf(': ');
 				if (p === -1) {
-					return this._returnHttpError(400, 'Invalid header');
+					throw new HttpError(400, 'Invalid header');
 				}
 				const key = line.substr(0, p);
 				let value = line.substr(p + 2);
 				if (this.headers.has(key)) {
 					value = this.headers.get(key) + ', ' + value;
 				} else if (this.headers.size >= HTTP_HEADER_MAX_COUNT) {
-					return this._returnHttpError(400, 'Too many headers');
+					throw new HttpError(400, 'Too many headers');
 				}
 				if (value.length > HTTP_HEADER_MAX_VALUE_LENGTH) {
-					return this._returnHttpError(400, 'Header value too long');
+					throw new HttpError(400, 'Header value too long');
 				}
 				this.headers.set(key, value);
 			}
 		} catch (e) {
-			return this._returnHttpError(500, 'Unknown error', e);
+			this.error(e);
 		}
 	}
 
@@ -205,13 +184,13 @@ class WebSocketConnection extends EventEmitter {
 			break;
 		case 0x09: // Ping
 			this.emit('ping', {data});
-			this.sendFrame(0x0A, data, true);
+			this.pong(data);
 			break;
 		case 0x0A: // Pong
 			this.emit('pong', {data});
 			break;
 		default:
-			this.error(1002, 'Unknown command opcode');
+			throw new HttpError(1002, 'Unknown command opcode');
 		}
 	}
 
@@ -238,7 +217,7 @@ class WebSocketConnection extends EventEmitter {
 			if (lastOfFrame) {
 				let commandData = frameData;
 				if (this.buffer.size() > 0) {
-					// Only use buffer if message is split
+					// Only use buffer if frame is split
 					this.buffer.add(frameData);
 					commandData = this.buffer.get();
 				}
@@ -277,6 +256,39 @@ class WebSocketConnection extends EventEmitter {
 		return bytesAvailable;
 	}
 
+	_beginFrame(frame) {
+		if (frame.isCommand && (frame.lengthL > COMMAND_MAX_SIZE || frame.lengthH > 0)) {
+			throw new HttpError(1002, 'Command message max length exceeded');
+		}
+
+		if (frame.isCommand && !frame.fin) {
+			throw new HttpError(1002, 'Command messages cannot be split');
+		}
+
+		if (frame.mask === null) {
+			throw new HttpError(1002, 'No mask specified');
+		}
+
+		if (frame.rsv1 || frame.rsv2 || frame.rsv3) {
+			throw new HttpError(1002, 'Unknown use of reserved header bits');
+		}
+
+		this.frame = frame;
+		this.frameMaskPos = 0;
+		if (!frame.isCommand) {
+			if (frame.opcode != 0x00) {
+				if (this.lastNonContOpcode != 0) {
+					throw new HttpError(1002, 'Previous message not finished');
+				}
+				this.lastNonContOpcode = frame.opcode;
+				this.emit('message-start', {opcode: frame.opcode});
+			} else if (this.lastNonContOpcode == 0) {
+				throw new HttpError(1002, 'Continuation of finished message');
+			}
+			this.emit('frame-start', {fin: frame.fin});
+		}
+	}
+
 	_data(d) {
 		try {
 			let offset = 0;
@@ -297,45 +309,17 @@ class WebSocketConnection extends EventEmitter {
 					return; // Not enough data yet; wait for more
 				}
 
-				if (frame.isCommand && (frame.lengthL > COMMAND_MAX_SIZE || frame.lengthH > 0)) {
-					return this.error(1002, 'Command message max length exceeded');
-				}
-
-				if (frame.isCommand && !frame.fin) {
-					return this.error(1002, 'Command messages cannot be split');
-				}
-
-				if (frame.mask === null) {
-					return this.error(1002, 'No mask specified');
-				}
-
-				if (frame.rsv1 || frame.rsv2 || frame.rsv3) {
-					return this.error(1002, 'Unknown use of reserved header bits');
-				}
-
 				// previously, buffer contained a fragment of header and no data
 				// (else it would already have been processed). Therefore, all data
 				// is in d, at a certain offset (but may not be complete yet)
 
 				offset += frame.headerSize - existingBufferData;
 				this.buffer.clear();
-				this.frame = frame;
-				this.frameMaskPos = 0;
-				if (!frame.isCommand) {
-					if (frame.opcode != 0x00) {
-						if (this.lastNonContOpcode != 0) {
-							return this.error(1002, 'Previous message not finished');
-						}
-						this.lastNonContOpcode = frame.opcode;
-						this.emit('message-start', {opcode: frame.opcode});
-					} else if (this.lastNonContOpcode == 0) {
-						return this.error(1002, 'Continuation of finished message');
-					}
-					this.emit('frame-start', {fin: frame.fin});
-				}
+
+				this._beginFrame(frame);
 			}
 		} catch (e) {
-			this.error(1011, 'Unknown error', e);
+			this.error(e);
 		}
 	}
 
@@ -407,9 +391,27 @@ class WebSocketConnection extends EventEmitter {
 		this.closed = true;
 	}
 
-	error(code, message, internalError = null) {
-		this.emit('error', {code, message, error: internalError});
-		this.close(code, message);
+	error(error) {
+		let status = this.hasUpgraded ? 1011 : 500;
+		let message = 'An internal error occurred';
+		if (typeof error === 'object' && error.status) {
+			status = error.status;
+			message = error.message;
+		}
+		this.emit('error', {code, message, error});
+
+		if (this.hasUpgraded) {
+			this.close(code, message);
+		} else {
+			this.socket.write(
+					'HTTP/1.1 ' + code + ' ' + http.STATUS_CODES[code] + '\r\n' +
+					'Content-Type: text/plain; charset=utf-8\r\n' +
+					'Content-Length: ' + Buffer.byteLength(message + '\n', 'utf8') + '\r\n' +
+					'\r\n' +
+					message + '\n', 'utf8'
+			);
+		}
+
 		this.socket.destroy();
 	}
 }

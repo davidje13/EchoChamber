@@ -26,6 +26,10 @@ class AppendableBuffer {
 		return this.pos;
 	}
 
+	capacity() {
+		return this.buffer.length;
+	}
+
 	clear() {
 		this.pos = 0;
 	}
