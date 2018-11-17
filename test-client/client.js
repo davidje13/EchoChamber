@@ -72,8 +72,9 @@ window.addEventListener('load', () => {
 	}
 
 	function sendMessage() {
+		const headers = []; // TODO: UI for specifying this
 		const msg = fMessage.value;
-		if (cm.send(msg)) {
+		if (cm.send(headers.join(':') + '\n' + msg)) {
 			fMessage.value = '';
 			showMessage(null, msg);
 		}

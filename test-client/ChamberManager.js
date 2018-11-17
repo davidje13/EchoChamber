@@ -117,7 +117,7 @@ class ChamberManager {
 	}
 
 	setUrl(url) {
-		if (this.currentUrl === url) {
+		if (this.currentUrl === url && this.ready) {
 			return;
 		}
 		this.currentUrl = url;

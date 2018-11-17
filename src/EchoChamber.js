@@ -3,9 +3,11 @@
 const EventEmitter = require('events');
 
 const {HttpError} = require('./HttpError.js');
+const {OnDemmandBuffer} = require('./AppendableBuffer.js');
 
 const MAX_QUEUE_ITEMS = 1024;
 const MAX_QUEUE_DATA = 128 * 1024;
+const HEADERS_MAX_LENGTH = 256;
 
 function queueDataBytes(queue) {
 	let size = 0;
@@ -13,6 +15,39 @@ function queueDataBytes(queue) {
 		size += item.data.length;
 	}
 	return size;
+}
+
+function shuffle(list) {
+	// thanks, https://stackoverflow.com/a/6274381/1180785
+	for (let i = list.length; (i --) > 0;) {
+		const j = Math.floor(Math.random() * (i + 1));
+		const t = list[i];
+		list[i] = list[j];
+		list[j] = t;
+	}
+}
+
+function targetComparator(a, b) {
+	const tm = Date.now() - 30000;
+	const aEstablished = (a.joined < tm);
+	const bEstablished = (b.joined < tm);
+	if (aEstablished !== bEstablished) {
+		return aEstablished ? -1 : 1;
+	}
+
+	const aAvailable = (a.queue.queue.length === 0);
+	const bAvailable = (b.queue.queue.length === 0);
+	if (aAvailable !== bAvailable) {
+		return aAvailable ? -1 : 1;
+	}
+
+	const aSending = (a.headerLength > 0);
+	const bSending = (a.headerLength > 0);
+	if (aSending !== bSending) {
+		return aSending ? 1 : -1;
+	}
+
+	return 0;
 }
 
 class OutputQueue {
@@ -94,7 +129,7 @@ class OutputQueue {
 			return;
 		}
 		this.connection.sendFrame(0x00, null, true);
-		this.connection.send('PREVIOUS MESSAGE TRUNCATED');
+		this.connection.send('X');
 		this.activeSender = null;
 		this._consumeQueue();
 	}
@@ -129,6 +164,10 @@ class OutputQueue {
 	}
 }
 
+function socketName(socket) {
+	return socket.remoteAddress + ':' + socket.remotePort;
+}
+
 class Chamber extends EventEmitter {
 	constructor(name, log) {
 		super();
@@ -138,52 +177,156 @@ class Chamber extends EventEmitter {
 		this.idCounter = 0;
 	}
 
-	add(wsc) {
-		const newID = (this.idCounter ++);
-		const newQueue = new OutputQueue(wsc);
-		this.log('Added ' + wsc.socket.remoteAddress + ':' + wsc.socket.remotePort + ' as ' + newID);
-		this.connections.set(wsc, {queue: newQueue, id: newID});
+	add(newConnection) {
+		const details = {
+			connection: newConnection,
+			queue: new OutputQueue(newConnection),
+			joined: Date.now(),
+			id: String(this.idCounter ++),
+			headerBuffer: new OnDemmandBuffer(HEADERS_MAX_LENGTH),
+			headerLength: 0,
+			currentTargets: new Set(),
+		};
+		this.log('Added ' + socketName(newConnection.socket) + ' as ' + details.id);
+		this.connections.set(details.id, details);
 
-		wsc.once('close', this.remove.bind(this, wsc));
-		wsc.on('message-part', this.receive.bind(this, wsc));
+		newConnection.once('close', this.remove.bind(this, details));
+		newConnection.on('message-start', this.receiveStart.bind(this, details));
+		newConnection.on('message-part', this.receivePart.bind(this, details));
 
-		let welcomeMessage = 'I' + newID;
-		for (const [connection, {queue, id}] of this.connections) {
-			if (connection !== wsc) {
-				queue.add(this, 'H' + newID);
+		let welcomeMessage = 'I' + details.id;
+		for (const [id, {queue}] of this.connections) {
+			if (id !== details.id) {
+				queue.add(this, 'H' + details.id);
 				welcomeMessage += ':H' + id;
 			}
 		}
-		newQueue.add(this, welcomeMessage);
+		details.queue.add(this, welcomeMessage);
 	}
 
-	receive(sender, {data, opcode, continuation, fin}) {
-		const details = this.connections.get(sender);
-		if (!details) {
-			return;
+	receiveStart(senderDetails, {opcode}) {
+		senderDetails.headerBuffer.clear();
+		senderDetails.headerLength = 0;
+	}
+
+	_pickOneTarget(exclude) {
+		const available = [];
+		for (const details of this.connections.values()) {
+			if (!exclude.has(details.id)) {
+				available.push(details);
+			}
 		}
-		for (const [connection, {queue}] of this.connections) {
-			if (connection !== sender) {
-				if (!continuation) {
-					queue.addFrame(sender, {data: 'F' + details.id + '\n', opcode, continuation: false, fin: false});
+		if (available.length === 0) {
+			return null;
+		}
+		shuffle(available); // ensure we don't pick on a particular connection
+		available.sort(targetComparator);
+		return available[0].id;
+	}
+
+	_parseHeader(details, data) {
+		const p = data.indexOf('\n');
+		if (p === -1) {
+			return false;
+		}
+
+		const currentTargets = details.currentTargets;
+		currentTargets.clear();
+		for (const header of data.toString('utf8', 0, p).split(':')) {
+			if (header.startsWith('T')) {
+				for (const target of header.substr(1).split(',')) {
+					currentTargets.add(target);
 				}
-				queue.addFrame(sender, {data, opcode, continuation: true, fin});
+			}
+		}
+
+		if (currentTargets.size === 0) {
+			// send to all except self
+			for (const id of this.connections.keys()) {
+				if (id !== details.id) {
+					currentTargets.add(id);
+				}
+			}
+		} else if (currentTargets.has('**')) {
+			// send to all including self
+			currentTargets.clear();
+			for (const id of this.connections.keys()) {
+				currentTargets.add(id);
+			}
+		} else if (currentTargets.has('*')) {
+			// pick long-lived connection to include excluding self
+			currentTargets.delete('*');
+			const hadSelf = currentTargets.has(details.id);
+			currentTargets.add(details.id);
+			const target = this._pickOneTarget(currentTargets);
+			if (target) {
+				currentTargets.add(target);
+			}
+			if (!hadSelf) {
+				currentTargets.delete(details.id);
+			}
+		}
+
+		details.headerLength = p + 1;
+		return true;
+	}
+
+	_sendToTargets(sender, targetIDs, frame) {
+		for (const id of targetIDs) {
+			const targetDetails = this.connections.get(id);
+			if (targetDetails) {
+				targetDetails.queue.addFrame(sender, frame);
 			}
 		}
 	}
 
-	remove(wsc) {
-		const details = this.connections.get(wsc);
-		if (!details) {
-			return;
+	receivePart(details, {data, opcode, fin}) {
+		if (details.headerLength === 0) {
+			const headerBuffer = details.headerBuffer;
+			const existingBufferData = headerBuffer.size();
+			const headerParsed = headerBuffer.addAndTest(
+				data,
+				this._parseHeader.bind(this, details)
+			);
+			if (!headerParsed) {
+				if (headerBuffer.size() >= headerBuffer.capacity()) {
+					throw new HttpError(4000, 'Header too large');
+				}
+				return; // wait for more data
+			}
+
+			this._sendToTargets(details.connection, details.currentTargets, {
+				data: 'F' + details.id + '\n',
+				opcode,
+				continuation: false,
+				fin: false,
+			});
+
+			data = data.slice(details.headerLength - existingBufferData);
 		}
-		for (const [connection, {queue}] of this.connections) {
-			queue.closeSender(wsc);
-			if (connection !== wsc) {
+
+		if (data.length > 0 || fin) {
+			this._sendToTargets(details.connection, details.currentTargets, {
+				data,
+				opcode,
+				continuation: true,
+				fin,
+			});
+
+			if (fin) {
+				details.headerLength = 0;
+			}
+		}
+	}
+
+	remove(details) {
+		for (const [id, {queue}] of this.connections) {
+			queue.closeSender(details.connection);
+			if (id !== details.id) {
 				queue.add(this, 'B' + details.id);
 			}
 		}
-		this.connections.delete(wsc);
+		this.connections.delete(details.id);
 		this.log('Removed ' + details.id);
 		if (this.connections.size === 0) {
 			this.emit('close');
@@ -220,10 +363,10 @@ class EchoChamber {
 				throw new HttpError(403, 'Origin ' + origin + ' not permitted');
 			}
 		}
-		return {protocol: 'echo', acceptor: (wsc) => this.accept(wsc, url)};
+		return {protocol: 'echo', acceptor: this.accept.bind(this, url)};
 	}
 
-	accept(wsc, url) {
+	accept(url, connection) {
 		let chamber = this.chambers.get(url);
 		if (!chamber) {
 			chamber = new Chamber(url, this.log);
@@ -234,7 +377,7 @@ class EchoChamber {
 				this.log('Removed chamber ' + url);
 			});
 		}
-		chamber.add(wsc);
+		chamber.add(connection);
 	}
 }
 
