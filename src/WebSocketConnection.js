@@ -15,7 +15,7 @@ const HTTP_HEADER_MAX_VALUE_LENGTH = 256;
 
 const SHARED_COMMANDBUF = Buffer.alloc(COMMAND_MAX_SIZE);
 
-const REGEXP_HTTP_REQUEST = /^GET ([a-zA-Z0-9_\\\/.?+ \-=~]*) HTTP\/1\.1$/;
+const REGEXP_HTTP_REQUEST = /^GET ([a-zA-Z0-9_\\\/.?&%+ \-=~]*) HTTP\/1\.1$/;
 
 const nop = () => {};
 
