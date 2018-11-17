@@ -46,7 +46,7 @@ class WebSocketServer extends EventEmitter {
 	_handleConnection(socket) {
 		const connection = new WebSocketConnection(socket, this._findTarget);
 		this.connections.add(connection);
-		connection.on('error', ({code, message, error}) => this.log('Closed socket with ' + code + ' "' + message + '"' + (error ? ' due to: ' + error : '')));
+		connection.on('error', ({status, message, error}) => this.log('Closed socket with ' + status + ' "' + message + '"' + (error ? ' due to: ' + error : '')));
 		connection.once('close', () => this.connections.delete(connection));
 	}
 

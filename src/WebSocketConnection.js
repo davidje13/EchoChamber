@@ -426,13 +426,13 @@ class WebSocketConnection extends EventEmitter {
 			status = error.status;
 			message = error.message;
 		}
-		this.emit('error', {code, message, error});
+		this.emit('error', {status, message, error});
 
 		if (this.hasUpgraded) {
-			this.close(code, message);
+			this.close(status, message);
 		} else {
 			this.socket.write(
-					'HTTP/1.1 ' + code + ' ' + http.STATUS_CODES[code] + '\r\n' +
+					'HTTP/1.1 ' + status + ' ' + http.STATUS_CODES[status] + '\r\n' +
 					'Content-Type: text/plain; charset=utf-8\r\n' +
 					'Content-Length: ' + Buffer.byteLength(message + '\n', 'utf8') + '\r\n' +
 					'\r\n' +
