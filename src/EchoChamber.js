@@ -147,11 +147,11 @@ class Chamber extends EventEmitter {
 		wsc.once('close', this.remove.bind(this, wsc));
 		wsc.on('message-part', this.receive.bind(this, wsc));
 
-		let welcomeMessage = 'ID ' + newID;
+		let welcomeMessage = 'I' + newID;
 		for (const [connection, {queue, id}] of this.connections) {
 			if (connection !== wsc) {
-				queue.add(this, 'HI ' + newID);
-				welcomeMessage += '\nHI ' + id;
+				queue.add(this, 'H' + newID);
+				welcomeMessage += ':H' + id;
 			}
 		}
 		newQueue.add(this, welcomeMessage);
@@ -165,7 +165,7 @@ class Chamber extends EventEmitter {
 		for (const [connection, {queue}] of this.connections) {
 			if (connection !== sender) {
 				if (!continuation) {
-					queue.addFrame(sender, {data: 'FROM ' + details.id + '\n\n', opcode, continuation: false, fin: false});
+					queue.addFrame(sender, {data: 'F' + details.id + '\n', opcode, continuation: false, fin: false});
 				}
 				queue.addFrame(sender, {data, opcode, continuation: true, fin});
 			}
@@ -180,7 +180,7 @@ class Chamber extends EventEmitter {
 		for (const [connection, {queue}] of this.connections) {
 			queue.closeSender(wsc);
 			if (connection !== wsc) {
-				queue.add(this, 'BYE ' + details.id);
+				queue.add(this, 'B' + details.id);
 			}
 		}
 		this.connections.delete(wsc);

@@ -29,16 +29,20 @@ Connect to a chamber with:
 socket = new WebSocket(baseURL + chamberName, ['echo']);
 ```
 
-All received messages will begin with metadata lines. These can be:
+All received messages will begin with colon-separated metadata. Each
+item begins with a letter which denotes its type, followed by
+type-specific data. The metadata types are:
 
-* `ID <n>`: received when first connecting; gives the unique ID for
-  this connection
-* `HI <n>`: received when a connection is made
-* `BYE <n>`: received when a connection is closed or lost
-* `FROM <n>`: the message which follows came from the noted connection
+* `I<n>`: received when first connecting; gives the unique ID for this
+  connection
+* `H<n>`: "hi" received when a connection is made
+* `B<n>`: "bye" received when a connection is closed or lost
+* `F<n>`: "from" the message which follows came from the noted
+  connection
 
-After all metadata lines, there may be 2 newlines followed by an
-arbitrary message.
+After all metadata, there may be a newline followed by an arbitrary
+message. If there is no metadata, the message will start with a
+newline.
 
 All sent messages will have metadata attached and be distributed to all
 other connections (excluding the one which sent the data).
@@ -47,3 +51,30 @@ User IDs are currently numeric, but may change to UUIDs or any
 alphanumeric format in the future.
 
 See the sources in `test-client` for an example.
+
+### Example messages:
+
+#### Begin connection to new room
+
+New connection is assigned ID "100"
+
+```
+I100
+```
+
+#### Begin connection to existing room
+
+Room already contains "3" and "22", new connection is assigned ID "29"
+
+```
+I29:H3:H22
+```
+
+#### Message received
+
+Message sent from connection "19"
+
+```
+F19
+Message here
+```

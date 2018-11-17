@@ -37,31 +37,31 @@ class ChamberManager {
 	}
 
 	_message({data}) {
-		let p = data.indexOf('\n\n');
+		let p = data.indexOf('\n');
 		if (p === -1) {
 			p = data.length;
 		}
 		let offset = 0;
 		let sender = null;
 		while (offset < p) {
-			let q = data.indexOf('\n', offset);
+			let q = data.indexOf(':', offset);
 			if (q === -1) {
 				q = p;
 			}
 			const headLn = data.substr(offset, q - offset);
-			if (headLn.startsWith('ID ')) {
-				this._id(headLn.substr(3));
-			} else if (headLn.startsWith('HI ')) {
-				this._hi(headLn.substr(3));
-			} else if (headLn.startsWith('BYE ')) {
-				this._bye(headLn.substr(4));
-			} else if (headLn.startsWith('FROM ')) {
-				sender = headLn.substr(5);
+			if (headLn.startsWith('I')) {
+				this._id(headLn.substr(1));
+			} else if (headLn.startsWith('H')) {
+				this._hi(headLn.substr(1));
+			} else if (headLn.startsWith('B')) {
+				this._bye(headLn.substr(1));
+			} else if (headLn.startsWith('F')) {
+				sender = headLn.substr(1);
 			}
 			offset = q + 1;
 		}
-		if (data.length >= p + 2) {
-			this.messageCallback(sender, data.substr(p + 2));
+		if (data.length >= p + 1) {
+			this.messageCallback(sender, data.substr(p + 1));
 		}
 	}
 
