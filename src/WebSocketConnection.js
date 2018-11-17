@@ -5,7 +5,7 @@ const http = require('http');
 const EventEmitter = require('events');
 
 const {HttpError} = require('./HttpError.js');
-const {AppendableBuffer} = require('./AppendableBuffer.js');
+const {AppendableBufferPool} = require('./AppendableBuffer.js');
 const ws = require('./wsFrameUtils.js');
 
 const COMMAND_MAX_SIZE = 125;
@@ -61,7 +61,7 @@ class WebSocketConnection extends EventEmitter {
 		this.lastNonContOpcode = 0;
 		this.frameMaskPos = 0;
 
-		this.buffer = new AppendableBuffer(HTTP_HEADER_MAX_LINE_LENGTH);
+		this.buffer = AppendableBufferPool.get(HTTP_HEADER_MAX_LINE_LENGTH);
 
 		this._handshakeData = this._handshakeData.bind(this);
 		this._data = this._data.bind(this);
@@ -95,11 +95,10 @@ class WebSocketConnection extends EventEmitter {
 			throw new HttpError(404, 'No handlers found for request');
 		}
 
-		// replace buffer with smaller version
-		this.buffer = new AppendableBuffer(Math.max(
-			ws.FRAME_HEADER_MAX_SIZE,
-			COMMAND_MAX_SIZE
-		));
+		// finished with header buffer
+		AppendableBufferPool.put(this.buffer);
+		this.buffer = null;
+
 		this.socket.off('data', this._handshakeData);
 		this.socket.on('data', this._data);
 
@@ -214,17 +213,17 @@ class WebSocketConnection extends EventEmitter {
 		}
 
 		if (frame.isCommand) {
-			if (lastOfFrame) {
-				let commandData = frameData;
-				if (this.buffer.size() > 0) {
-					// Only use buffer if frame is split
-					this.buffer.add(frameData);
-					commandData = this.buffer.get();
+			this._optionallyBuffered(
+				frameData,
+				COMMAND_MAX_SIZE,
+				(commandData) => {
+					if (!lastOfFrame) {
+						return false;
+					}
+					this._handleCommandOpcode(commandData, frame.opcode);
+					return true;
 				}
-				this._handleCommandOpcode(commandData, frame.opcode);
-			} else {
-				this.buffer.add(frameData);
-			}
+			);
 		} else {
 			this.emit('message-part', {
 				data: frameData,
@@ -245,7 +244,6 @@ class WebSocketConnection extends EventEmitter {
 				this.lastNonContOpcode = 0;
 			}
 			this.frame = null;
-			this.buffer.clear();
 		} else if (bytesAvailable <= frame.lengthL) {
 			frame.lengthL -= bytesAvailable;
 		} else {
@@ -300,27 +298,55 @@ class WebSocketConnection extends EventEmitter {
 						break;
 					}
 				}
-
-				// Look for next frame
-				const existingBufferData = this.buffer.size();
-				const consumed = this.buffer.add(d.slice(offset), ws.FRAME_HEADER_MAX_SIZE);
-				const frame = ws.readFrameHeader(this.buffer.get());
-				if (!frame) {
-					return; // Not enough data yet; wait for more
+				if (offset >= d.length) {
+					break;
 				}
 
-				// previously, buffer contained a fragment of header and no data
-				// (else it would already have been processed). Therefore, all data
-				// is in d, at a certain offset (but may not be complete yet)
+				// Look for next frame
 
-				offset += frame.headerSize - existingBufferData;
-				this.buffer.clear();
+				const existingBufferData = this.buffer ? this.buffer.size() : 0;
+				const frame = this._optionallyBuffered(
+					d.slice(offset),
+					ws.FRAME_HEADER_MAX_SIZE,
+					ws.readFrameHeader
+				);
 
-				this._beginFrame(frame);
+				if (frame) {
+					// previously, buffer contained a fragment of header and no data
+					// (else it would already have been processed). Therefore, all data
+					// is in d, at a certain offset (but may not be complete yet)
+
+					this._beginFrame(frame);
+					offset += frame.headerSize - existingBufferData;
+				} else {
+					break;
+				}
 			}
 		} catch (e) {
 			this.error(e);
 		}
+	}
+
+	_optionallyBuffered(data, bufferSize, fn) {
+		if (this.buffer) {
+			// Only use buffer if necessary
+			this.buffer.add(data);
+			data = this.buffer.get();
+		}
+
+		const result = fn(data);
+
+		if (result) {
+			// Finished with buffer; return it
+			AppendableBufferPool.put(this.buffer);
+			this.buffer = null;
+		} else if (!this.buffer) {
+			// Not enough data yet; buffer what we have and wait for more
+			this.buffer = AppendableBufferPool.get(bufferSize);
+			this.buffer.add(data);
+		}
+
+		return result;
 	}
 
 	_end() {
@@ -330,6 +356,8 @@ class WebSocketConnection extends EventEmitter {
 
 	_close() {
 		this.closed = true;
+		AppendableBufferPool.put(this.buffer);
+		this.buffer = null;
 		this.emit('close');
 	}
 
