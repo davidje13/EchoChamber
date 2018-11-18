@@ -3,7 +3,7 @@
 'use strict';
 
 const {WebSocketServer} = require('./src/WebSocketServer.js');
-const {EchoChamber} = require('./src/EchoChamber.js');
+const {EchoChamberHalls} = require('./src/EchoChamberHalls.js');
 
 const HOSTNAME = '127.0.0.1';
 let PORT = Number.parseInt(process.argv[2], 10);
@@ -24,7 +24,7 @@ if (DOMAINS === '') {
 // Memory usage will typically be much lower (unless explicitly attacked)
 // The values below result in ~0.25GB peak memory usage
 
-const echoChamber = new EchoChamber('/', DOMAINS, {
+const echoChamber = new EchoChamberHalls('/', DOMAINS, {
 	MAX_QUEUE_ITEMS: 1024,
 	MAX_QUEUE_DATA: 16 * 1024,
 	HEADERS_MAX_LENGTH: 1024,
@@ -33,7 +33,7 @@ const echoChamber = new EchoChamber('/', DOMAINS, {
 });
 
 // 2-person echo chambers do not require a queue, so we can support more of them
-const p2EchoChamber = new EchoChamber('/p2/', DOMAINS, {
+const p2EchoChamber = new EchoChamberHalls('/p2/', DOMAINS, {
 	MAX_QUEUE_ITEMS: 0,
 	MAX_QUEUE_DATA: 0,
 	HEADERS_MAX_LENGTH: 1024,
