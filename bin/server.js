@@ -2,8 +2,7 @@
 
 'use strict';
 
-const {WebSocketServer} = require('./src/WebSocketServer.js');
-const {EchoChamberHalls} = require('./src/EchoChamberHalls.js');
+const {EchoChamberHalls, WebSocketServer} = require('../src/index.js');
 
 const HOSTNAME = '127.0.0.1';
 let PORT = Number.parseInt(process.argv[2], 10);

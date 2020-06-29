@@ -5,12 +5,18 @@
       location = "container:src">
    </FileRef>
    <FileRef
+      location = "container:bin">
+   </FileRef>
+   <FileRef
       location = "container:test-client">
    </FileRef>
    <FileRef
-      location = "container:server.js">
+      location = "container:Readme.md">
    </FileRef>
    <FileRef
-      location = "container:Readme.md">
+      location = "container:LICENSE">
+   </FileRef>
+   <FileRef
+      location = "container:package.json">
    </FileRef>
 </Workspace>

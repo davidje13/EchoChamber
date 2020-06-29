@@ -1,0 +1,29 @@
+{
+	"name": "echo-chamber",
+	"version": "1.0.0",
+	"description": "Low-overhead implementation of a WebSocket communication hub.",
+	"files": [
+		"src/**/*",
+		"bin/server.js"
+	],
+	"bin": {
+		"echo-chamber": "bin/server.js"
+	},
+	"main": "src/index.js",
+	"scripts": {
+		"start": "node bin/server.js"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/davidje13/EchoChamber.git"
+	},
+	"keywords": [
+		"websocket"
+	],
+	"author": "David Evans",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/davidje13/EchoChamber/issues"
+	},
+	"homepage": "https://github.com/davidje13/EchoChamber#readme"
+}
