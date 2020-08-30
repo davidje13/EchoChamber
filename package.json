@@ -1,5 +1,5 @@
 {
-	"name": "echo-chamber",
+	"name": "websocket-echo-chamber",
 	"version": "1.0.0",
 	"description": "Low-overhead implementation of a WebSocket communication hub.",
 	"files": [

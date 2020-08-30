@@ -24,7 +24,7 @@ npm start 8080 file://
 You can include this in another project using npm:
 
 ```sh
-npm install --save git+https://github.com/davidje13/EchoChamber.git#semver:^1.0.0
+npm install --save websocket-echo-chamber
 ```
 
 Once added, you can start the server from the command line:
@@ -36,7 +36,7 @@ echo-chamber 8080 file://
 Or create your own server programmatically:
 
 ```javascript
-const {EchoChamberHalls, WebSocketServer} = require('echo-chamber');
+const {EchoChamberHalls, WebSocketServer} = require('websocket-echo-chamber');
 
 const domains = [];
 
